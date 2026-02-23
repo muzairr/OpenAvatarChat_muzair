@@ -107,11 +107,11 @@ class Tts2faceCpuAdapter(BaseAlgoAdapter):
         avatar_zip_path = os.path.join(avatar_dir, avatar_name)
         if not os.path.exists(avatar_zip_path):
             cmd = [
-                "modelscope", "download", "--model", "HumanAIGC-Engineering/LiteAvatarGallery", avatar_name,
+                sys.executable, "-m", "modelscope", "download", "--model", "HumanAIGC-Engineering/LiteAvatarGallery", avatar_name,
                 "--local_dir", avatar_dir
                 ]
             logger.info("download avatar data from modelscope, cmd: {}", " ".join(cmd))
-            sp.run(cmd)
+            sp.run(cmd, check=True)
         return avatar_zip_path
 
     @staticmethod

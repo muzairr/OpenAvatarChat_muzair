@@ -13,6 +13,8 @@ from chat_engine.data_models.session_info_data import SessionInfoData, IOQueueTy
 class SharedStates:
     active: bool = False
     enable_vad: bool = True
+    interrupt_requested: bool = False
+    ai_is_responding: bool = False  # Track if AI is currently generating response
 
 
 class SessionContext(object):

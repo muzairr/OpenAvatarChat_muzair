@@ -41,6 +41,7 @@ class LLMContext(HandlerContext):
         self.current_image = None
         self.history = None
         self.enable_video_input = False
+        self.session_context = None
 
 
 class HandlerLLM(HandlerBase, ABC):
@@ -85,6 +86,7 @@ class HandlerLLM(HandlerBase, ABC):
         if not isinstance(handler_config, LLMConfig):
             handler_config = LLMConfig()
         context = LLMContext(session_context.session_info.session_id)
+        context.session_context = session_context
         context.model_name = handler_config.model_name
         context.system_prompt = {'role': 'system', 'content': handler_config.system_prompt}
         context.api_key = handler_config.api_key
@@ -144,7 +146,20 @@ class HandlerLLM(HandlerBase, ABC):
             context.current_image = None
             context.input_texts = ''
             context.output_texts = ''
+            interrupted = False
+            
+            # Mark that AI is now responding (for barge-in detection)
+            context.session_context.shared_states.ai_is_responding = True
+            logger.info("🎯 AI started responding - barge-in detection enabled")
+            
             for chunk in completion:
+                # Check for interrupt signal (barge-in detection)
+                if context.session_context.shared_states.interrupt_requested:
+                    logger.warning("\ud83d\udd34 LLM streaming interrupted by user (barge-in)")
+                    context.session_context.shared_states.interrupt_requested = False
+                    context.session_context.shared_states.ai_is_responding = False
+                    interrupted = True
+                    break
                 if (chunk and chunk.choices and chunk.choices[0] and chunk.choices[0].delta.content):
                     output_text = chunk.choices[0].delta.content
                     context.output_texts += output_text
@@ -154,9 +169,23 @@ class HandlerLLM(HandlerBase, ABC):
                     output.add_meta("avatar_text_end", False)
                     output.add_meta("speech_id", speech_id)
                     yield output
-            context.history.add_message(HistoryMessage(role="human", content=chat_text))
-            context.history.add_message(HistoryMessage(role="avatar", content=context.output_texts))
+            
+            # Mark AI finished responding
+            context.session_context.shared_states.ai_is_responding = False
+            logger.info("✅ AI finished responding - barge-in detection disabled")
+            
+            # Add to history even if interrupted
+            if not interrupted:
+                context.history.add_message(HistoryMessage(role="human", content=chat_text))
+                context.history.add_message(HistoryMessage(role="avatar", content=context.output_texts))
+            else:
+                # If interrupted, still add partial response to history for context
+                logger.info(f"Interrupted response (partial): {context.output_texts[:50]}...")
+                context.history.add_message(HistoryMessage(role="human", content=chat_text))
+                context.history.add_message(HistoryMessage(role="avatar", content=f"[Interrupted] {context.output_texts}"))
         except Exception as e:
+            # Mark AI finished responding (error case)
+            context.session_context.shared_states.ai_is_responding = False
             logger.error(e)
             if (isinstance(e, APIStatusError)):
                 response = e.body
@@ -168,6 +197,9 @@ class HandlerLLM(HandlerBase, ABC):
             output.add_meta("avatar_text_end", False)
             output.add_meta("speech_id", speech_id)
             yield output
+        
+        # Ensure flag is cleared at the end
+        context.session_context.shared_states.ai_is_responding = False
         context.input_texts = ''
         context.output_texts = ''
         logger.info('avatar text end')

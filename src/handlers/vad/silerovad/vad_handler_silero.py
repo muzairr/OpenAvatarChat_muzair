@@ -240,13 +240,23 @@ class HandlerAudioVAD(HandlerBase, ABC):
             head_sample_id = context.slice_context.get_last_slice_start_index()
             speech_prob = self._inference(context, clip)
             audio_clip, extra_args = context.update_status(speech_prob, clip, timestamp=head_sample_id)
-            # FIXME this is a hack to disable VAD after human speech end,
-            #  but it should be handled by client or downstream handlers
+            
+            # Check if user is trying to interrupt AI response
+            human_speech_start = extra_args.get("human_speech_start", False)
+            if human_speech_start and context.shared_states.ai_is_responding:
+                logger.warning("🔴 BARGE-IN DETECTED: User interrupted AI response!")
+                context.shared_states.interrupt_requested = True
+                context.shared_states.ai_is_responding = False
+                # Don't disable VAD - let it continue processing the new input
+            
             human_speech_end = extra_args.get("human_speech_end", False)
             timestamp = extra_args.get("head_sample_id", head_sample_id)
             speech_id = f"speech-{context.session_id}-{context.speech_id}"
             if human_speech_end:
-                context.shared_states.enable_vad = False
+                # Only disable VAD if AI is not currently responding
+                # This allows barge-in during AI responses
+                if not context.shared_states.ai_is_responding:
+                    context.shared_states.enable_vad = False
                 context.reset()
             if audio_clip is not None:
                 output = DataBundle(output_definition)

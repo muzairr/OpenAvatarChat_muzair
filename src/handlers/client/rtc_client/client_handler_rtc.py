@@ -53,6 +53,9 @@ def _configure_h264_hardware_encoding():
             test_codec.pix_fmt = "yuv420p"
             test_codec.framerate = fractions.Fraction(30, 1)
             test_codec.time_base = fractions.Fraction(1, 30)
+            # Actually open the codec to verify it works (not just create context)
+            test_codec.open()
+            test_codec.close()
             _selected_h264_encoder = encoder
             logger.info(f"Detected H.264 hardware encoder: {encoder}")
             break
@@ -148,7 +151,7 @@ def _configure_h264_hardware_encoding():
                 for package in self.codec.encode(frame):
                     data_to_send += bytes(package)
                 break
-            except (_AVError, _AVCodecError) as encode_error:
+            except Exception as encode_error:
                 if fallback_attempted or encoder_to_use == 'libx264':
                     logger.error(f"H.264 encode failed using {encoder_to_use}: {encode_error}")
                     raise
@@ -499,10 +502,15 @@ class ClientHandlerRtc(ClientHandlerBase):
                output_definitions: Dict[ChatDataType, HandlerDataInfo]):
         context = cast(ClientRtcContext, context)
         if context.client_session_delegate is None:
+            logger.warning("RTC client handle() called but client_session_delegate is None")
             return
+        logger.info(f"RTC client handle() received: type={inputs.type}, channel_type={inputs.type.channel_type}")
         data_queue = context.client_session_delegate.output_queues.get(inputs.type.channel_type)
         if data_queue is not None:
+            logger.info(f"Putting {inputs.type} data into queue for {inputs.type.channel_type}")
             data_queue.put_nowait(inputs)
+        else:
+            logger.warning(f"No queue found for channel type {inputs.type.channel_type}")
 
     def destroy_context(self, context: HandlerContext):
         pass

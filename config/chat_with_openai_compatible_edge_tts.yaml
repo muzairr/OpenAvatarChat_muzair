@@ -18,35 +18,35 @@ default:
         connection_ttl: 900
       SileroVad:
         module: vad/silerovad/vad_handler_silero
-        speaking_threshold: 0.5
-        start_delay: 2048
-        end_delay: 5000
-        buffer_look_back: 5000
-        speech_padding: 512
+        speaking_threshold: 0.3  # Lower = more sensitive
+        start_delay: 1200  # Fast activation for responsiveness
+        end_delay: 3000  # Shorter silence before ending
+        buffer_look_back: 6000  # Capture 6s before speech (prevents cutting start)
+        speech_padding: 800  # More padding to protect word edges
       SenseVoice:
         enabled: True
         module: asr/sensevoice/asr_handler_sensevoice
         model_name: "iic/SenseVoiceSmall"
+        language: "en"  # Set to "en" for English-only for better accuracy ("auto", "zh", "en", "yue", "ja", "ko")
+        use_itn: true  # Inverse text normalization for better number/date formatting
       Edge_TTS:
-        enabled: True
+        enabled: False  # Disabled for text-only mode
         module: tts/edgetts/tts_handler_edgetts
-        voice: "zh-CN-XiaoxiaoNeural"
+        voice: "en-US-AriaNeural"
       LLMOpenAICompatible:
         enabled: True
         module: llm/openai_compatible/llm_handler_openai_compatible
-        model_name: "qwen-plus"
-        enable_video_input: False # ensure your llm support video input
+        model_name: "llama3.2:1b"
+        enable_video_input: False
         history_length: 20
-        # model_name: "gemini-2.0-flash"
-        system_prompt: "请你扮演一个 AI 助手，用简短的两三句对话来回答用户的问题，并在对话内容中加入合适的标点符号，不需要讨论标点符号相关的内容"
-        api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        # api_url: 'http://127.0.0.1:11434/v1' # ollama
-        # api_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
-        # api_key: "" # default=os.getenv("DASHSCOPE_API_KEY")
+        system_prompt: "You are an AI assistant. Respond to questions briefly in 2-3 sentences with proper punctuation."
+        api_url: "http://127.0.0.1:11434/v1"
+        api_key: "ollama"
       LiteAvatar:
+        enabled: False  # Disabled for text-only mode (too slow on CPU)
         module: avatar/liteavatar/avatar_handler_liteavatar
         avatar_name: 20250408/sample_data
         fps: 25
         debug: false
         enable_fast_mode: false
-        use_gpu: true
+        use_gpu: false

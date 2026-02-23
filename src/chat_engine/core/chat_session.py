@@ -392,3 +392,13 @@ class ChatSession:
         # TODO this is temp implementation a full signal infrastructure is needed.
         if signal.source_type == ChatSignalSourceType.CLIENT and signal.type == ChatSignalType.END:
             self.session_context.shared_states.enable_vad = True
+        elif signal.source_type == ChatSignalSourceType.CLIENT and signal.type == ChatSignalType.INTERRUPT:
+            logger.info("Interrupt signal received - stopping current response")
+            self.session_context.shared_states.interrupt_requested = True
+            # Clear output queues to stop any ongoing response
+            for queue in self.session_context.output_queues.values():
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except:
+                        break

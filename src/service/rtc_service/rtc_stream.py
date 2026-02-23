@@ -113,12 +113,31 @@ class RtcStream(AsyncAudioVideoStreamHandler):
                 self.first_audio_emitted = True
 
             while not self.quit.is_set():
-                chat_data = await self.client_session_delegate.get_data(EngineChannelType.AUDIO)
+                # Try to get audio data with a timeout
+                try:
+                    chat_data = await asyncio.wait_for(
+                        self.client_session_delegate.get_data(EngineChannelType.AUDIO), 
+                        timeout=0.1
+                    )
+                except asyncio.TimeoutError:
+                    # No audio data available - return silence to keep stream alive
+                    silence_samples = self.output_frame_size
+                    silence = np.zeros((1, silence_samples), dtype=np.float32)
+                    return self.output_sample_rate, silence
+                    
                 if chat_data is None or chat_data.data is None:
-                    continue
+                    # Return silence instead of continuing the loop
+                    silence_samples = self.output_frame_size
+                    silence = np.zeros((1, silence_samples), dtype=np.float32)
+                    return self.output_sample_rate, silence
+                    
                 audio_array = chat_data.data.get_main_data()
                 if audio_array is None:
-                    continue
+                    # Return silence instead of continuing the loop
+                    silence_samples = self.output_frame_size
+                    silence = np.zeros((1, silence_samples), dtype=np.float32)
+                    return self.output_sample_rate, silence
+                    
                 sample_num = audio_array.shape[-1]
                 self.emit_counter.add_property("audio_emit", sample_num / self.output_sample_rate)
                 return self.output_sample_rate, audio_array
@@ -140,7 +159,18 @@ class RtcStream(AsyncAudioVideoStreamHandler):
             
             while not self.quit.is_set():
                 get_data_start = time.perf_counter()
-                video_frame_data: ChatData = await self.client_session_delegate.get_data(EngineChannelType.VIDEO)
+                
+                # Try to get video data with a timeout
+                try:
+                    video_frame_data: ChatData = await asyncio.wait_for(
+                        self.client_session_delegate.get_data(EngineChannelType.VIDEO),
+                        timeout=0.1
+                    )
+                except asyncio.TimeoutError:
+                    # No video data available - return blank frame (black screen)
+                    blank_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+                    return blank_frame
+                
                 get_data_wait_time = time.perf_counter() - get_data_start
                 
                 # Log slow data retrieval
@@ -148,11 +178,15 @@ class RtcStream(AsyncAudioVideoStreamHandler):
                     logger.debug(f"[{self.session_id}] Slow video data retrieval: {get_data_wait_time:.3f}s")
                 
                 if video_frame_data is None or video_frame_data.data is None:
-                    continue
+                    # Return blank frame instead of continuing the loop
+                    blank_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+                    return blank_frame
                 
                 frame_data = video_frame_data.data.get_main_data().squeeze()
                 if frame_data is None:
-                    continue
+                    # Return blank frame instead of continuing the loop
+                    blank_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+                    return blank_frame
                 
                 return frame_data
         except Exception as e:
@@ -189,20 +223,38 @@ class RtcStream(AsyncAudioVideoStreamHandler):
     def set_channel(self, channel):
             super().set_channel(channel)
             self.chat_channel = channel
+            logger.info(f"Data channel set up for session, starting chat history forwarder")
             
             async def process_chat_history():
                 role = None
                 chat_id = None
-                while not self.quit.is_set():
-                    chat_data = await self.client_session_delegate.get_data(EngineChannelType.TEXT)
-                    if chat_data is None or chat_data.data is None:
-                        continue
-                    logger.debug(f"Got chat data {str(chat_data)}")
-                    current_role = 'human' if chat_data.type == ChatDataType.HUMAN_TEXT else 'avatar'
-                    chat_id = uuid.uuid4().hex if current_role != role else chat_id
-                    role = current_role
-                    self.chat_channel.send(json.dumps({'type': 'chat', 'message': chat_data.data.get_main_data(), 
-                                                        'id': chat_id, 'role': current_role}))  
+                logger.info("Chat history forwarder task started")
+                try:
+                    while not self.quit.is_set():
+                        chat_data = await self.client_session_delegate.get_data(EngineChannelType.TEXT)
+                        if chat_data is None or chat_data.data is None:
+                            continue
+                        logger.info(f"Got chat data: type={chat_data.type}, message={chat_data.data.get_main_data()}")
+                        current_role = 'human' if chat_data.type == ChatDataType.HUMAN_TEXT else 'avatar'
+                        chat_id = uuid.uuid4().hex if current_role != role else chat_id
+                        role = current_role
+                        message_json = json.dumps({'type': 'chat', 'message': chat_data.data.get_main_data(), 
+                                                            'id': chat_id, 'role': current_role})
+                        logger.info(f"Sending chat message to frontend: {message_json}")
+                        self.chat_channel.send(message_json)
+                        
+                        # Check if this is the end of avatar response (for text-only mode)
+                        if chat_data.type == ChatDataType.AVATAR_TEXT and chat_data.data.get_meta('avatar_text_end', False):
+                            logger.info("Avatar response ended - sending avatar_end signal and re-enabling VAD")
+                            # AI finished responding
+                            self.client_session_delegate.shared_states.ai_is_responding = False
+                            # Send avatar_end to frontend
+                            self.chat_channel.send(json.dumps({'type': 'avatar_end'}))
+                            # Re-enable VAD so user can speak again
+                            self.client_session_delegate.shared_states.enable_vad = True
+                            
+                except Exception as e:
+                    logger.opt(exception=e).error("Error in process_chat_history")
             asyncio.create_task(process_chat_history())
                 
             @channel.on("message")
@@ -222,6 +274,8 @@ class RtcStream(AsyncAudioVideoStreamHandler):
                 logger.info(f'on_chat_datachannel: {message}')
     
                 if message['type'] == 'stop_chat':
+                    logger.info("STOP_CHAT signal received - emitting INTERRUPT")
+                    self.client_session_delegate.shared_states.ai_is_responding = False
                     self.client_session_delegate.emit_signal(
                         ChatSignal(
                             type=ChatSignalType.INTERRUPT,
@@ -229,11 +283,16 @@ class RtcStream(AsyncAudioVideoStreamHandler):
                             source_name="rtc",
                         )
                     )
+                    # Re-enable VAD so user can speak again immediately
+                    self.client_session_delegate.shared_states.enable_vad = True
+                    logger.info("VAD re-enabled after interrupt")
                 elif message['type'] == 'chat':
                     channel.send(json.dumps({'type': 'avatar_end'}))
-                    if self.client_session_delegate.shared_states.enable_vad is False:
-                        return
-                    self.client_session_delegate.shared_states.enable_vad = False
+                    # Mark that AI is now responding (for barge-in detection)
+                    self.client_session_delegate.shared_states.ai_is_responding = True
+                    logger.info("AI started responding - barge-in detection enabled")
+                    # Don't disable VAD - we need it active to detect barge-in!
+                    # The VAD handler will manage enable/disable based on ai_is_responding flag
                     self.client_session_delegate.emit_signal(
                         ChatSignal(
                             # begin a new round of responding

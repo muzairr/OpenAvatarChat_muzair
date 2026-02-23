@@ -4,6 +4,7 @@ import re
 from typing import Dict, Optional, cast
 from loguru import logger
 import numpy as np
+from scipy import signal
 from pydantic import BaseModel, Field
 from abc import ABC
 import os
@@ -21,8 +22,42 @@ from engine_utils.directory_info import DirectoryInfo
 from engine_utils.general_slicer import SliceContext, slice_data
 
 
+def preprocess_audio(audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+    """
+    Apply audio preprocessing to improve ASR quality:
+    1. High-pass filter to remove low-frequency noise (< 80Hz)
+    2. Volume normalization to ensure consistent levels
+    """
+    if audio is None or audio.size == 0:
+        return audio
+    
+    # High-pass filter to remove low-frequency noise
+    # Gentler filter to avoid cutting speech frequencies
+    nyquist = sample_rate / 2.0
+    cutoff_freq = 50.0  # Hz - gentler cutoff (was 80Hz)
+    normalized_cutoff = cutoff_freq / nyquist
+    
+    # Design Butterworth high-pass filter (order 3 - gentler)
+    b, a = signal.butter(3, normalized_cutoff, btype='high', analog=False)
+    
+    # Apply filter
+    filtered_audio = signal.filtfilt(b, a, audio)
+    
+    # Gentle volume normalization to boost quiet speech
+    max_amplitude = np.abs(filtered_audio).max()
+    if max_amplitude > 0 and max_amplitude < 0.5:  # Only boost if quiet
+        target_level = 0.6  # Gentler normalization
+        filtered_audio = filtered_audio * (target_level / max_amplitude)
+    elif max_amplitude > 0.9:  # Prevent clipping if too loud
+        filtered_audio = filtered_audio * (0.8 / max_amplitude)
+    
+    return filtered_audio.astype(audio.dtype)
+
+
 class ASRConfig(HandlerBaseConfigModel, BaseModel):
     model_name: str = Field(default="iic/SenseVoiceSmall")
+    language: str = Field(default="auto")  # "auto", "zh", "en", "yue", "ja", "ko"
+    use_itn: bool = Field(default=True)  # Inverse text normalization (numbers, dates, etc.)
 
 
 class ASRContext(HandlerContext):
@@ -86,10 +121,15 @@ class HandlerASR(HandlerBase, ABC):
 
     def load(self, engine_config: ChatEngineConfigModel, handler_config: Optional[BaseModel] = None):
         if isinstance(handler_config, ASRConfig):
-            self.model_name = handler_config.model_name       
-            model_path = os.path.join(DirectoryInfo.get_models_dir(), handler_config.model_name)
-            if os.path.exists(model_path):
-                self.model_name = model_path
+            self.model_name = handler_config.model_name
+            self.language = handler_config.language
+            self.use_itn = handler_config.use_itn
+        else:
+            self.language = "auto"
+            self.use_itn = True
+        model_path = os.path.join(DirectoryInfo.get_models_dir(), self.model_name)
+        if os.path.exists(model_path):
+            self.model_name = model_path
         logger.info(f"load model {self.model_name}")
         self.model = AutoModel(model=self.model_name, disable_update=True)
 
@@ -118,6 +158,9 @@ class HandlerASR(HandlerBase, ABC):
 
         if audio is not None:
             audio = audio.squeeze()
+            
+            # Apply audio preprocessing (noise filtering + normalization)
+            audio = preprocess_audio(audio, sample_rate=16000)
 
             logger.info('audio in')
             for audio_segment in slice_data(context.audio_slice_context, audio):
@@ -142,10 +185,17 @@ class HandlerASR(HandlerBase, ABC):
             logger.info('dump audio')
             context.audio_dump_file.write(output_audio.tobytes())
 
-        res = self.model.generate(input=output_audio, batch_size_s=10)
+        res = self.model.generate(
+            input=output_audio, 
+            batch_size_s=10,
+            language=self.language,  # Specify language for better accuracy
+            use_itn=self.use_itn  # Better number/date formatting
+        )
         logger.info(res)
         context.output_audios.clear()
         output_text = re.sub(r"<\|.*?\|>", "", res[0]['text'])
+        # Clean up common transcription errors
+        output_text = output_text.strip()
         if len(output_text) == 0:
             # 如果 ASR 识别结果为空，则需要重新开启vad
             context.shared_states.enable_vad = True
