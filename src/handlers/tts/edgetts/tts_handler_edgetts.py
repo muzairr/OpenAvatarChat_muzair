@@ -33,6 +33,7 @@ class TTSContext(HandlerContext):
         self.input_text = ''
         self.dump_audio = False
         self.audio_dump_file = None
+        self.shared_states = None  # Set during create_context for interrupt checking
 
 
 class HandlerTTS(HandlerBase, ABC):
@@ -83,6 +84,7 @@ class HandlerTTS(HandlerBase, ABC):
             handler_config = TTSConfig()
         context = TTSContext(session_context.session_info.session_id)
         context.input_text = ''
+        context.shared_states = session_context.shared_states  # For interrupt checking
         if context.dump_audio:
             dump_file_path = os.path.join(DirectoryInfo.get_project_dir(), 'temp',
                                             f"dump_avatar_audio_{context.session_id}_{time.localtime().tm_hour}_{time.localtime().tm_min}.pcm")
@@ -110,6 +112,21 @@ class HandlerTTS(HandlerBase, ABC):
         if (speech_id is None):
             speech_id = context.session_id
 
+        # Check for interrupt - skip processing if interrupted
+        if context.shared_states and context.shared_states.interrupt_requested:
+            logger.warning("🔴 TTS interrupted - skipping text chunk")
+            text_end = inputs.data.get_meta("avatar_text_end", False)
+            if text_end:
+                # Still send the speech end marker so downstream knows to stop
+                context.input_text = ''
+                output = DataBundle(output_definition)
+                output.set_main_data(np.zeros(shape=(1, 240), dtype=np.float32))
+                output.add_meta("avatar_speech_end", True)
+                output.add_meta("speech_id", speech_id)
+                context.submit_data(output)
+                logger.info("TTS sent speech_end marker after interrupt")
+            return
+
         if text is not None:
             text = re.sub(r"<\|.*?\|>", "", text)
             context.input_text += self.filter_text(text)
@@ -125,40 +142,76 @@ class HandlerTTS(HandlerBase, ABC):
                 for sentence in complete_sentences:
                     if len(sentence.strip()) < 1:
                         continue
+                    
+                    # Check interrupt before each sentence synthesis
+                    if context.shared_states and context.shared_states.interrupt_requested:
+                        logger.warning("🔴 TTS interrupted before synthesizing sentence")
+                        context.input_text = ''
+                        return
+                    
                     logger.info('current sentence' + sentence)
                     
                     communicate = edge_tts.Communicate(sentence, self.voice)
                     data = b''
+                    interrupted = False
 
                     for chunk in communicate.stream_sync():
+                        # Check interrupt during synthesis
+                        if context.shared_states and context.shared_states.interrupt_requested:
+                            logger.warning("🔴 TTS interrupted during synthesis - abandoning sentence")
+                            interrupted = True
+                            break
                         if chunk['type'] == 'audio':
-                            # tts_audio = chunk['data']
                             data += chunk['data']
                     
-                    output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
-                    output_audio = output_audio[np.newaxis, ...]
-                    output = DataBundle(output_definition)
-                    output.set_main_data(output_audio)
-                    output.add_meta("avatar_speech_end", False)
-                    output.add_meta("speech_id", speech_id)
-                    context.submit_data(output)
+                    if interrupted:
+                        context.input_text = ''
+                        return
+                    
+                    if len(data) > 0:
+                        output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
+                        output_audio = output_audio[np.newaxis, ...]
+                        output = DataBundle(output_definition)
+                        output.set_main_data(output_audio)
+                        output.add_meta("avatar_speech_end", False)
+                        output.add_meta("speech_id", speech_id)
+                        context.submit_data(output)
         else:
             logger.info('last sentence' + context.input_text)
+            
+            # Check interrupt before final sentence
+            if context.shared_states and context.shared_states.interrupt_requested:
+                logger.warning("🔴 TTS interrupted before final sentence")
+                context.input_text = ''
+                output = DataBundle(output_definition)
+                output.set_main_data(np.zeros(shape=(1, 240), dtype=np.float32))
+                output.add_meta("avatar_speech_end", True)
+                output.add_meta("speech_id", speech_id)
+                context.submit_data(output)
+                return
+            
             if context.input_text is not None and len(context.input_text.strip()) > 0:
                     communicate = edge_tts.Communicate(context.input_text, self.voice)
                     data = b''
+                    interrupted = False
 
                     for chunk in communicate.stream_sync():
+                        # Check interrupt during final sentence synthesis
+                        if context.shared_states and context.shared_states.interrupt_requested:
+                            logger.warning("🔴 TTS interrupted during final sentence synthesis")
+                            interrupted = True
+                            break
                         if chunk['type'] == 'audio':
-                            # tts_audio = chunk['data']
                             data += chunk['data']
-                    output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
-                    output_audio = output_audio[np.newaxis, ...]
-                    output = DataBundle(output_definition)
-                    output.set_main_data(output_audio)
-                    output.add_meta("avatar_speech_end", False)
-                    output.add_meta("speech_id", speech_id)
-                    context.submit_data(output)
+                    
+                    if not interrupted and len(data) > 0:
+                        output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
+                        output_audio = output_audio[np.newaxis, ...]
+                        output = DataBundle(output_definition)
+                        output.set_main_data(output_audio)
+                        output.add_meta("avatar_speech_end", False)
+                        output.add_meta("speech_id", speech_id)
+                        context.submit_data(output)
             context.input_text = ''
             output = DataBundle(output_definition)
             output.set_main_data(np.zeros(shape=(1, 240), dtype=np.float32))

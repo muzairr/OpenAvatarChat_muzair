@@ -110,6 +110,41 @@ class HandlerTts2Face(HandlerBase, ABC):
         context = cast(HandlerTts2FaceContext, context)
         speech_id = inputs.data.get_meta("speech_id")
         speech_end = inputs.data.get_meta("avatar_speech_end", False)
+        
+        # Check for interrupt - flush avatar audio queue and skip
+        if self.shared_state and self.shared_state.interrupt_requested:
+            logger.warning("🔴 Avatar handler interrupted - clearing audio queue")
+            # Clear the avatar worker's audio input queue
+            while not context.lite_avatar_worker.audio_in_queue.empty():
+                try:
+                    context.lite_avatar_worker.audio_in_queue.get_nowait()
+                except:
+                    break
+            # Clear the avatar worker's audio/video output queues
+            while not context.lite_avatar_worker.audio_out_queue.empty():
+                try:
+                    packet = context.lite_avatar_worker.audio_out_queue.get_nowait()
+                    if hasattr(context.lite_avatar_worker, 'shm_pool') and context.lite_avatar_worker.shm_pool:
+                        try:
+                            context.lite_avatar_worker.shm_pool.release_audio_buffer(packet.buffer_index)
+                        except:
+                            pass
+                except:
+                    break
+            while not context.lite_avatar_worker.video_out_queue.empty():
+                try:
+                    packet = context.lite_avatar_worker.video_out_queue.get_nowait()
+                    if hasattr(context.lite_avatar_worker, 'shm_pool') and context.lite_avatar_worker.shm_pool:
+                        try:
+                            context.lite_avatar_worker.shm_pool.release_video_buffer(packet.buffer_index)
+                        except:
+                            pass
+                except:
+                    break
+            if speech_end:
+                logger.info("Avatar received speech_end during interrupt - skipping")
+            return
+        
         audio_entry = inputs.data.get_main_definition_entry()
         audio_array = inputs.data.get_main_data()
         if audio_array is not None:

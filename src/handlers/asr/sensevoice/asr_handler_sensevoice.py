@@ -196,6 +196,38 @@ class HandlerASR(HandlerBase, ABC):
         output_text = re.sub(r"<\|.*?\|>", "", res[0]['text'])
         # Clean up common transcription errors
         output_text = output_text.strip()
+        
+        # Filter out non-Latin characters when language is set to English
+        if self.language == "en":
+            # Remove any characters that are not Latin alphabet, numbers, or basic punctuation
+            # This prevents multilingual garbled output
+            filtered_text = re.sub(r'[^\x00-\x7F]+', '', output_text)  # Remove non-ASCII
+            filtered_text = re.sub(r'[^\w\s\.\,\!\?\-\'\"]', '', filtered_text)  # Keep only alphanumeric and basic punctuation
+            filtered_text = filtered_text.strip()
+            
+            # Calculate what percentage of original text is valid English
+            if len(output_text) > 0:
+                english_ratio = len(filtered_text) / len(output_text)
+            else:
+                english_ratio = 0
+            
+            # Require at least 70% English characters for short phrases, 50% for longer ones
+            min_ratio = 0.7 if len(output_text) < 30 else 0.5
+            
+            if english_ratio >= min_ratio and len(filtered_text) >= 3:
+                output_text = filtered_text
+                # Additional check: reject if too many random short words (likely noise)
+                words = output_text.split()
+                if len(words) > 5 and all(len(w) <= 4 for w in words[:5]):
+                    logger.warning(f"Rejected likely noise (too many short random words): {output_text[:100]}")
+                    context.shared_states.enable_vad = True
+                    return
+            else:
+                # If low English ratio, likely garbage - ignore it
+                logger.warning(f"Filtered out likely non-English/noise (ratio={english_ratio:.2f}): {output_text[:100]}")
+                context.shared_states.enable_vad = True
+                return
+        
         if len(output_text) == 0:
             # 如果 ASR 识别结果为空，则需要重新开启vad
             context.shared_states.enable_vad = True

@@ -283,9 +283,8 @@ class RtcStream(AsyncAudioVideoStreamHandler):
                             source_name="rtc",
                         )
                     )
-                    # Re-enable VAD so user can speak again immediately
-                    self.client_session_delegate.shared_states.enable_vad = True
-                    logger.info("VAD re-enabled after interrupt")
+                    # emit_signal now handles: interrupt flag, queue flushing, VAD re-enable
+                    logger.info("INTERRUPT signal dispatched - pipeline will be flushed")
                 elif message['type'] == 'chat':
                     channel.send(json.dumps({'type': 'avatar_end'}))
                     # Mark that AI is now responding (for barge-in detection)

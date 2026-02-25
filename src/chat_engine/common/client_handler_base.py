@@ -65,6 +65,10 @@ class ClientHandlerDelegate:
             raise RuntimeError(msg)
         session_delegate = handler_env.handler_info.client_session_delegate_class()
         handler_env.handler.on_setup_session_delegate(session.session_context, handler_env.context, session_delegate)
+        # Wire up signal routing: delegate -> ChatSession
+        if hasattr(session_delegate, '_signal_callback'):
+            session_delegate._signal_callback = session.emit_signal
+            logger.info(f"Signal callback wired for session {session_id}")
         self.session_delegates[session_id] = session_delegate
         return session_delegate
 

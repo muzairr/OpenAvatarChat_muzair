@@ -301,6 +301,7 @@ class ChatSession:
         shared_states = session_context.shared_states
         input_queue = handler_env.input_queue
         handler = handler_env.handler
+        handler_name = handler_env.handler_info.name
         output_info = handler_env.output_info
         if output_info is None:
             output_info = {}
@@ -317,7 +318,7 @@ class ChatSession:
                 if handler_result is None:
                     continue
                 chat_data = cls._packet_chat_data(
-                    handler_env.handler_info.name,
+                    handler_name,
                     output_info,
                     session_context,
                     handler_output
@@ -393,12 +394,35 @@ class ChatSession:
         if signal.source_type == ChatSignalSourceType.CLIENT and signal.type == ChatSignalType.END:
             self.session_context.shared_states.enable_vad = True
         elif signal.source_type == ChatSignalSourceType.CLIENT and signal.type == ChatSignalType.INTERRUPT:
-            logger.info("Interrupt signal received - stopping current response")
+            logger.info("🔴 INTERRUPT signal received - stopping current response pipeline")
             self.session_context.shared_states.interrupt_requested = True
-            # Clear output queues to stop any ongoing response
-            for queue in self.session_context.output_queues.values():
-                while not queue.empty():
+            self.session_context.shared_states.ai_is_responding = False
+            
+            # Drain ALL output queues (audio/video going to client)
+            for channel_type, out_queue in self.session_context.output_queues.items():
+                drained = 0
+                while not out_queue.empty():
                     try:
-                        queue.get_nowait()
+                        out_queue.get_nowait()
+                        drained += 1
                     except:
                         break
+                if drained > 0:
+                    logger.info(f"  Drained {drained} items from output queue {channel_type}")
+            
+            # Drain handler input queues (buffered data in TTS, Avatar, etc.)
+            for handler_name, handler_record in self.handlers.items():
+                if handler_record.env.input_queue is not None:
+                    drained = 0
+                    while not handler_record.env.input_queue.empty():
+                        try:
+                            handler_record.env.input_queue.get_nowait()
+                            drained += 1
+                        except:
+                            break
+                    if drained > 0:
+                        logger.info(f"  Drained {drained} items from handler '{handler_name}' input queue")
+            
+            # Re-enable VAD immediately so user can speak
+            self.session_context.shared_states.enable_vad = True
+            logger.info("  VAD re-enabled after interrupt, pipeline flushed")

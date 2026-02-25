@@ -251,6 +251,7 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
         self.timestamp_generator = None
         self.data_submitter = None
         self.shared_states = None
+        self._signal_callback = None  # Set by client_handler_base to route to ChatSession
         self.output_queues = {
             EngineChannelType.AUDIO: asyncio.Queue(),
             EngineChannelType.VIDEO: asyncio.Queue(),
@@ -311,7 +312,11 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
         return self.timestamp_generator()
 
     def emit_signal(self, signal: ChatSignal):
-        pass
+        if self._signal_callback is not None:
+            logger.info(f"Forwarding signal {signal.type} to ChatSession")
+            self._signal_callback(signal)
+        else:
+            logger.warning(f"Signal {signal.type} dropped: no signal_callback set")
 
     def clear_data(self):
         for data_queue in self.output_queues.values():

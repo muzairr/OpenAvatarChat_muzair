@@ -128,6 +128,12 @@ class AvatarProcessor:
 
             speech_id = audio_slice.speech_id
             if speech_id != self._current_speech_id:
+                # New speech started - clear old queues to prevent lag
+                logger.info(f"New speech detected: {speech_id}, clearing old audio queues")
+                if self._signal_queue is not None:
+                    self._signal_queue.queue.clear()
+                if self._mouth_img_queue is not None:
+                    self._mouth_img_queue.queue.clear()
                 self._last_speech_ended = False
                 self._current_speech_id = speech_id
             if audio_slice.end_of_speech:

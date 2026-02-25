@@ -18,19 +18,29 @@ default:
         connection_ttl: 900
       SileroVad:
         module: vad/silerovad/vad_handler_silero
-        speaking_threshold: 0.3  # Lower = more sensitive
-        start_delay: 1200  # Fast activation for responsiveness
-        end_delay: 3000  # Shorter silence before ending
+        speaking_threshold: 0.45  # Slightly more sensitive for faster barge-in detection
+        start_delay: 1536  # ~96ms (3 clips) - faster speech start detection for barge-in
+        end_delay: 6000  # 375ms silence before ending (reduced from 500ms for faster turnaround)
         buffer_look_back: 6000  # Capture 6s before speech (prevents cutting start)
-        speech_padding: 800  # More padding to protect word edges
+        speech_padding: 1200  # Extra padding to protect word edges
       SenseVoice:
-        enabled: True
+        enabled: False  # Disabled - causes hallucinations on noise
         module: asr/sensevoice/asr_handler_sensevoice
         model_name: "iic/SenseVoiceSmall"
         language: "en"  # Set to "en" for English-only for better accuracy ("auto", "zh", "en", "yue", "ja", "ko")
         use_itn: true  # Inverse text normalization for better number/date formatting
+      WhisperASR:
+        enabled: True  # Industry-standard ASR - no hallucinations
+        module: asr/whisper/asr_handler_whisper
+        model_size: "base"  # tiny, base, small, medium (base is best balance)
+        device: "auto"  # Will use GPU if available
+        compute_type: "int8"  # Faster, lower memory
+        language: "en"  # Force English only
+        beam_size: 5  # Good quality
+        vad_filter: true  # Use Whisper's built-in VAD for extra filtering
+        min_silence_duration_ms: 500  # 500ms silence to split segments
       Edge_TTS:
-        enabled: False  # Disabled for text-only mode
+        enabled: True
         module: tts/edgetts/tts_handler_edgetts
         voice: "en-US-AriaNeural"
       LLMOpenAICompatible:
@@ -43,10 +53,11 @@ default:
         api_url: "http://127.0.0.1:11434/v1"
         api_key: "ollama"
       LiteAvatar:
-        enabled: False  # Disabled for text-only mode (too slow on CPU)
+        enabled: True  # Avatar enabled
         module: avatar/liteavatar/avatar_handler_liteavatar
         avatar_name: 20250408/sample_data
         fps: 25
         debug: false
         enable_fast_mode: false
-        use_gpu: false
+        use_gpu: true  # Enable GPU for avatar rendering
+        stop_ack_timeout: 0.5  # Reduced from 5.0 - faster clearing of old audio

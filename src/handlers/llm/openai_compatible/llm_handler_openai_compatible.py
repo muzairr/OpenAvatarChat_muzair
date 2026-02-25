@@ -126,6 +126,13 @@ class HandlerLLM(HandlerBase, ABC):
         if not text_end:
             return
 
+        # Clear interrupt flag when starting to process new user input
+        # This ensures downstream handlers (TTS, Avatar) have seen the flag
+        # and the pipeline is ready for new data
+        if context.session_context.shared_states.interrupt_requested:
+            context.session_context.shared_states.interrupt_requested = False
+            logger.info("🟢 Interrupt flag cleared - processing new user input")
+
         chat_text = context.input_texts
         chat_text = re.sub(r"<\|.*?\|>", "", chat_text)
         if len(chat_text) < 1:
@@ -155,8 +162,8 @@ class HandlerLLM(HandlerBase, ABC):
             for chunk in completion:
                 # Check for interrupt signal (barge-in detection)
                 if context.session_context.shared_states.interrupt_requested:
-                    logger.warning("\ud83d\udd34 LLM streaming interrupted by user (barge-in)")
-                    context.session_context.shared_states.interrupt_requested = False
+                    logger.warning("🔴 LLM streaming interrupted by user (barge-in)")
+                    # Don't clear interrupt_requested here - let downstream handlers (TTS, Avatar) see it
                     context.session_context.shared_states.ai_is_responding = False
                     interrupted = True
                     break
